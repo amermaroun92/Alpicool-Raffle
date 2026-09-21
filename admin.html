@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Alpicool Raffle Admin</title>
+<style>
+*{box-sizing:border-box} body{margin:0;font-family:Inter,system-ui,Arial,sans-serif;background:#07111f;color:#f5f9ff}
+.wrap{max-width:1050px;margin:auto;padding:28px} .card{background:#0d1b2d;border:1px solid #20334c;border-radius:20px;padding:22px;margin:18px 0}
+h1{margin:0 0 6px} .muted{color:#9fb1c7} input{width:100%;padding:13px;margin:6px 0 12px;border-radius:10px;border:1px solid #304862;background:#081421;color:white}
+button{border:0;border-radius:10px;padding:11px 15px;font-weight:800;cursor:pointer} .primary{background:#42d392;color:#052015;width:100%}
+.approve{background:#42d392;color:#052015} .reject{background:#ff7373;color:#2a0707} .logout{background:#24364d;color:white}
+.top{display:flex;justify-content:space-between;gap:12px;align-items:center} .order{background:#091625;border:1px solid #233b57;border-radius:16px;padding:17px;margin-top:13px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:12px} .nums{font-size:22px;font-weight:900;color:#42d392} .pending{color:#ffc857} .paid{color:#42d392}
+.actions{display:flex;gap:9px;margin-top:14px} .error{color:#ff9c9c} .success{color:#78e8ae} #admin{display:none}
+@media(max-width:650px){.row{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<div id="login" class="card" style="max-width:460px;margin:70px auto">
+<h1>Raffle Admin</h1><p class="muted">Sign in with your administrator account.</p>
+<label>Email</label><input id="email" type="email" autocomplete="username">
+<label>Password</label><input id="password" type="password" autocomplete="current-password">
+<button class="primary" id="loginBtn">SIGN IN</button>
+<p id="loginMsg" class="muted"></p>
+</div>
+
+<div id="admin">
+<div class="top"><div><h1>Alpicool Raffle Admin</h1><div class="muted">Verify Whish payments before approving orders.</div></div><button class="logout" id="logoutBtn">LOG OUT</button></div>
+<div class="card">
+<div class="top"><div><b>Reservations</b><div class="muted" id="summary">Loading…</div></div><button class="logout" id="refreshBtn">REFRESH</button></div>
+<div id="orders"></div>
+<p id="adminMsg" class="muted"></p>
+</div>
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+const sb=supabase.createClient('https://rveiocahjwylnsfkefgf.supabase.co','sb_publishable_Njh5Gjyp7nMg_9tjkwkjdg_BYW5l-a0');
+const login=document.getElementById('login'), admin=document.getElementById('admin');
+const loginMsg=document.getElementById('loginMsg'), adminMsg=document.getElementById('adminMsg');
+
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function fmt(n){return String(n).padStart(2,'0')}
+
+async function showState(){
+ const {data:{session}}=await sb.auth.getSession();
+ if(session){login.style.display='none';admin.style.display='block';await loadOrders()}
+ else{login.style.display='block';admin.style.display='none'}
+}
+document.getElementById('loginBtn').onclick=async()=>{
+ loginMsg.textContent='Signing in…'; loginMsg.className='muted';
+ const email=document.getElementById('email').value.trim(), password=document.getElementById('password').value;
+ const {error}=await sb.auth.signInWithPassword({email,password});
+ if(error){loginMsg.textContent='Login failed: '+error.message;loginMsg.className='error';return}
+ document.getElementById('password').value=''; await showState();
+};
+document.getElementById('logoutBtn').onclick=async()=>{await sb.auth.signOut();await showState()};
+document.getElementById('refreshBtn').onclick=loadOrders;
+
+async function loadOrders(){
+ adminMsg.textContent=''; document.getElementById('orders').innerHTML='<p class="muted">Loading…</p>';
+ const {data,error}=await sb.rpc('admin_get_reservations');
+ if(error){document.getElementById('orders').innerHTML='';adminMsg.textContent='Could not load orders: '+error.message;adminMsg.className='error';return}
+ const groups={};
+ for(const r of data||[]){(groups[r.order_id]??=[]).push(r)}
+ const entries=Object.entries(groups);
+ document.getElementById('summary').textContent=`${entries.length} order(s) • ${(data||[]).length} reserved number(s)`;
+ if(!entries.length){document.getElementById('orders').innerHTML='<p class="muted">No reservations yet.</p>';return}
+ document.getElementById('orders').innerHTML=entries.map(([oid,rows])=>{
+   const r=rows[0], nums=rows.map(x=>Number(x.number)).sort((a,b)=>a-b), total=nums.length*5;
+   const status=rows.every(x=>x.status==='paid')?'paid':'pending';
+   return `<div class="order">
+    <div class="top"><div><b>${esc(oid)}</b><div class="${status}">${status.toUpperCase()}</div></div><div><b>$${total}</b></div></div>
+    <div class="nums">${nums.map(n=>'#'+fmt(n)).join(' &nbsp; ')}</div>
+    <div class="row"><p><span class="muted">Customer</span><br>${esc(r.customer_name)}</p><p><span class="muted">Phone</span><br>${esc(r.phone)}</p></div>
+    ${status==='pending'
+      ? `<div class="actions"><button class="approve" onclick="approveOrder('${esc(oid)}')">APPROVE PAYMENT</button><button class="reject" onclick="rejectOrder('${esc(oid)}')">REJECT / RELEASE</button></div>`
+      : `<div class="actions"><button class="reject" onclick="cancelOrder('${esc(oid)}')">CANCEL ORDER / RELEASE NUMBERS</button></div>`}
+   </div>`;
+ }).join('');
+}
+async function approveOrder(id){
+ if(!confirm('Approve this payment and mark all its numbers as PAID?'))return;
+ const {error}=await sb.rpc('admin_approve_order',{p_order_id:id});
+ if(error){alert(error.message);return} await loadOrders();
+}
+async function rejectOrder(id){
+ if(!confirm('Reject this order and release all its numbers?'))return;
+ const {error}=await sb.rpc('admin_reject_order',{p_order_id:id});
+ if(error){alert(error.message);return} await loadOrders();
+}
+async function cancelOrder(id){
+ if(!confirm('Cancel this PAID order and release ALL its numbers? Only continue if any required refund has been handled.'))return;
+ const {error}=await sb.rpc('admin_cancel_order',{p_order_id:id});
+ if(error){alert(error.message);return}
+ await loadOrders();
+}
+showState();
+</script>
+</body>
+</html>
